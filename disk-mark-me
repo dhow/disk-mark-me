@@ -1,0 +1,395 @@
+#!/bin/bash
+# disk-mark-me v1.1.3
+# Author: [Your Name/Handle Here - Optional]
+# Date: $(date +%Y-%m-%d)
+# Description: fio-based disk benchmark tool (mimics CrystalDiskMark profile).
+#              Requires fio, numfmt, and other standard GNU/Linux utilities.
+
+# --- Default Configuration ---
+DEFAULT_TEST_ROUNDS=1
+DEFAULT_TEST_SIZE="1g" 
+
+# --- Global Variables ---
+TARGET_DIR=""
+TEST_FILE_NAME="fio_benchmark_temp.dat"
+TEST_FILE_PATH=""
+TEST_ROUNDS=$DEFAULT_TEST_ROUNDS
+SPECIFIED_TEST_SIZE=$DEFAULT_TEST_SIZE
+VERBOSE_OUTPUT=0 # 0 for false, 1 for true
+
+# --- Helper Functions ---
+function usage() {
+    echo "disk-mark-me v1.1.3: fio-based disk benchmark tool"
+    echo ""
+    echo "Usage: $0 -t /path/to/target_directory [OPTIONS]"
+    echo ""
+    echo "Required Argument:"
+    echo "  -t, --target-dir DIR   Specifies the directory on the storage device to test."
+    echo ""
+    echo "Options:"
+    echo "  -s, --filesize SIZE    Test file size. Suffix 'm' for MiB, 'g' for GiB (fio convention)."
+    echo "                         Examples: 128m, 512m, 1g, 2g. (Default: ${DEFAULT_TEST_SIZE})"
+    echo "  -r, --rounds NUM       Number of times to run each test configuration and average results."
+    echo "                         (Default: ${DEFAULT_TEST_ROUNDS})"
+    echo "  -v, --verbose          Enable verbose output (shows per-round details)."
+    echo "  -h, --help             Show this help message and exit."
+    echo ""
+    echo "Example:"
+    echo "  $0 -t /mnt/sdcard -s 512m -r 3 -v"
+    echo ""
+    echo "Prerequisites: fio, numfmt, grep (with PCRE/-P support), awk, bc, df, stat, id, touch, rm."
+    echo "               Ensure these tools are installed and in your system PATH."
+}
+
+function check_tools() {
+    echo "INFO: Checking for required tools..."
+    local missing_tool_count=0
+    REQUIRED_TOOLS=("fio" "numfmt" "grep" "awk" "bc" "df" "stat" "id" "touch" "rm")
+
+    for tool in "${REQUIRED_TOOLS[@]}"; do
+        if ! command -v "$tool" &> /dev/null; then
+            echo "ERROR: Required tool '$tool' is not installed or not in PATH."
+            missing_tool_count=$((missing_tool_count + 1))
+        fi
+    done
+
+    if ! grep -P "test" <<< "test" &> /dev/null; then
+        echo "ERROR: Your 'grep' version does not support -P (PCRE regexes), which is required."
+        echo "       Please install a 'grep' version with PCRE support (e.g., GNU grep)."
+        missing_tool_count=$((missing_tool_count + 1))
+    fi
+
+    if [ "$missing_tool_count" -gt 0 ]; then
+        echo "ERROR: Please install missing tools or ensure they are in your PATH, then try again."
+        exit 1
+    fi
+    if [ "$VERBOSE_OUTPUT" -eq 0 ]; then # Only show "All tools found" if not verbose, to keep startup clean
+        echo "INFO: All required tools found."
+    fi
+}
+
+function print_header() {
+    echo "------------------------------------------------------------------------------"
+    echo "disk-mark-me v1.1.3 - fio v$(fio --version | awk '{print $1}' | sed 's/fio-//')"
+    echo "------------------------------------------------------------------------------"
+    echo "* MB/s = 1,000,000 bytes/s"
+    local normalized_target_dir="${TARGET_DIR%/}"
+    echo "* Target: ${normalized_target_dir} | Test File Size: ${SPECIFIED_TEST_SIZE} (IEC) | Rounds: ${TEST_ROUNDS}"
+    if [ "$VERBOSE_OUTPUT" -eq 1 ]; then
+        echo "* Verbose output enabled."
+    fi
+    echo
+}
+
+function clear_caches() {
+    if [ "$VERBOSE_OUTPUT" -eq 1 ]; then
+        echo -n "INFO: Attempting to clear disk caches... "
+    fi
+    # Actual cache clearing logic
+    if [ "$(id -u)" -eq 0 ]; then
+        sync
+        echo 3 > /proc/sys/vm/drop_caches
+        [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Done (running as root)."
+    elif command -v sudo &> /dev/null; then
+        if sudo -n true 2>/dev/null; then
+            sudo sync
+            sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
+            [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Done (using sudo without password)."
+        else
+            [ "$VERBOSE_OUTPUT" -eq 1 ] && {
+                echo "Sudo requires a password or is not configured for NOPASSWD for cache clearing."
+                echo "      Skipping cache clear to avoid hanging script. Read results might be inflated by OS cache."
+            }
+        fi
+    else
+        [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Not root and sudo not found. Read results might be affected by OS caching."
+    fi
+}
+
+function run_fio_test() {
+    local test_label="$1"
+    local rw_mode="$2"
+    local block_size_str="$3"
+    local io_depth="$4"
+    local num_jobs="$5"
+    
+    local total_mb_s="0.0"
+    local total_iops="0.0"
+    local successful_runs=0
+    local current_run_mb_s
+    local current_run_iops
+
+    local test_size_for_numfmt 
+    test_size_for_numfmt=$(echo "$SPECIFIED_TEST_SIZE" | tr '[:lower:]' '[:upper:]')
+
+    local test_size_bytes
+    test_size_bytes=$(numfmt --from=iec "$test_size_for_numfmt" 2>/dev/null) # Error handling for this is done pre-run
+
+    local block_size_bytes_for_calc=0
+    if [[ "$block_size_str" == "4k" ]]; then
+        block_size_bytes_for_calc=4096
+    elif [[ "$block_size_str" == "1M" ]]; then 
+        block_size_bytes_for_calc=1048576
+    fi
+
+    # Only print this once per test configuration, not per round if not verbose
+    if [ "$VERBOSE_OUTPUT" -eq 1 ]; then
+        echo "Running ${test_label} (${rw_mode}, bs=${block_size_str}, Q=${io_depth}, T=${num_jobs})"
+    fi
+    
+    for (( r=1; r<=$TEST_ROUNDS; r++ )); do
+        current_run_mb_s="0.000" 
+        current_run_iops="0.0"   
+
+        if [ "$VERBOSE_OUTPUT" -eq 1 ]; then
+            echo -n "  Round $r/$TEST_ROUNDS... "
+        elif [ "$TEST_ROUNDS" -eq 1 ] && [ "$r" -eq 1 ]; then # Show "Executing..." only for single round
+            echo -n "Running ${test_label}... "
+        elif [ "$r" -eq 1 ]; then # For multiple rounds, non-verbose, show "Running..." once.
+             echo -n "Running ${test_label}... "
+        fi
+
+
+        local current_fio_opts_array=( \
+            "--name=${test_label// /_}_run${r}" \
+            "--filename=${TEST_FILE_PATH}" \
+            "--rw=${rw_mode}" \
+            "--bs=${block_size_str}" \
+            "--iodepth=${io_depth}" \
+            "--numjobs=${num_jobs}" \
+            "--size=${SPECIFIED_TEST_SIZE}" \
+            "--direct=1" \
+            "--ioengine=libaio" \
+            "--group_reporting" \
+            "--output-format=normal" \
+            "--fallocate=none" \
+        )
+
+        if [[ "$rw_mode" == "read" || "$rw_mode" == "randread" ]]; then
+            local file_exists_correctly=0
+            if [ -f "$TEST_FILE_PATH" ]; then
+                local size_for_numfmt_check=$(echo "$SPECIFIED_TEST_SIZE" | tr '[:lower:]' '[:upper:]')
+                local current_test_size_bytes_for_check
+                current_test_size_bytes_for_check=$(numfmt --from=iec "$size_for_numfmt_check" 2>/dev/null)
+                local current_file_size=$(stat -c%s "$TEST_FILE_PATH")
+
+                if [ -n "$current_test_size_bytes_for_check" ] && [ "$current_file_size" -ge "$current_test_size_bytes_for_check" ]; then
+                    file_exists_correctly=1
+                fi
+            fi
+
+            if [ "$file_exists_correctly" -eq 0 ]; then
+                if [ "$VERBOSE_OUTPUT" -eq 1 ] || [ "$r" -eq 1 ]; then # Show only on first round or if verbose
+                    echo "INFO: Test file ${TEST_FILE_PATH} not found/small. Creating/resizing to ${SPECIFIED_TEST_SIZE}..."
+                fi
+                fio --name=prep_read_file --filename="$TEST_FILE_PATH" --size="$SPECIFIED_TEST_SIZE" \
+                    --rw=write --bs=1M --direct=1 --ioengine=libaio --fallocate=none > /dev/null 2>&1
+                if [ $? -ne 0 ]; then 
+                    [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "ERROR: Failed to create test file for round $r."
+                    continue; 
+                fi 
+                [ "$VERBOSE_OUTPUT" -eq 1 ] || [ "$r" -eq 1 ] && echo "INFO: Test file created/resized."
+            fi
+            clear_caches # clear_caches itself checks VERBOSE_OUTPUT
+            current_fio_opts_array+=(--readonly)
+        fi
+        
+        local result_line
+        result_line=$(fio "${current_fio_opts_array[@]}" 2>/dev/null | grep -E -i " (read|write): IOPS=" | head -1)
+
+        if [ -n "$result_line" ]; then
+            local mb_s_val_parsed
+            mb_s_val_parsed=$(echo "$result_line" | grep -oP 'BW=\K[0-9.]+(?=MB/s)')
+            [ -z "$mb_s_val_parsed" ] && mb_s_val_parsed=$(echo "$result_line" | grep -oP '\(\K[0-9.]+(?=MB/s\))')
+            [ -n "$mb_s_val_parsed" ] && current_run_mb_s=$(printf "%.3f" "$mb_s_val_parsed")
+
+            local iops_val
+            iops_val=$(echo "$result_line" | grep -oP 'IOPS=\K[0-9.kK]+' | sed 's/,//')
+            if [ -n "$iops_val" ]; then
+                if [[ "$iops_val" == *[kK] ]]; then
+                    current_run_iops=$(printf "%.1f" $(echo "$(echo "$iops_val" | sed 's/[kK]//') * 1000" | bc -l))
+                else
+                    current_run_iops=$(printf "%.1f" "$iops_val")
+                fi
+            fi
+
+            if [ "$current_run_mb_s" == "0.000" ] && [ "$(echo "$current_run_iops > 0" | bc -l)" -eq 1 ] && [ "$block_size_bytes_for_calc" -gt 0 ]; then
+                local calculated_mb_s=$(echo "scale=3; ($current_run_iops * $block_size_bytes_for_calc) / 1000000" | bc -l)
+                [ "$(echo "$calculated_mb_s > 0" | bc -l)" -eq 1 ] && current_run_mb_s=$(printf "%.3f" "$calculated_mb_s")
+            fi
+        fi
+
+        if [ "$current_run_mb_s" == "0.000" ] && [ "$(echo "$current_run_iops == 0" | bc -l)" -eq 1 ]; then
+            [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Failed (Round $r)."
+        else
+            [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Done (MB/s: $current_run_mb_s, IOPS: $current_run_iops)."
+            total_mb_s=$(echo "$total_mb_s + $current_run_mb_s" | bc -l)
+            total_iops=$(echo "$total_iops + $current_run_iops" | bc -l)
+            successful_runs=$((successful_runs + 1))
+        fi
+    done 
+
+    if [ "$VERBOSE_OUTPUT" -eq 0 ]; then # If not verbose, print "Done." on the same line as "Running..."
+        echo "Done."
+    fi
+
+    if [ "$successful_runs" -eq 0 ]; then
+        echo "ERROR: All rounds failed for ${test_label}."
+        return 1
+    fi
+
+    local avg_mb_s=$(echo "scale=3; $total_mb_s / $successful_runs" | bc -l)
+    local avg_iops=$(echo "scale=1; $total_iops / $successful_runs" | bc -l)
+    
+    [[ "$avg_mb_s" == ".000" || "$avg_mb_s" == "-.000" ]] && avg_mb_s="0.000"
+    [[ "$avg_iops" == ".0" || "$avg_iops" == "-.0" ]] && avg_iops="0.0"
+
+    # Final output line format
+    if [ "$VERBOSE_OUTPUT" -eq 1 ] && [ "$TEST_ROUNDS" -gt 1 ]; then
+        printf "  %-23s: %9s MB/s [%9s IOPS] (Avg of %d runs)\n" "$test_label" "$avg_mb_s" "$avg_iops" "$successful_runs"
+    else
+        printf "  %-23s: %9s MB/s [%9s IOPS]\n" "$test_label" "$avg_mb_s" "$avg_iops"
+    fi
+    return 0
+}
+
+function cleanup() {
+    if [ -n "$TEST_FILE_PATH" ] && [ -f "$TEST_FILE_PATH" ]; then
+        [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: Cleaning up test file: $TEST_FILE_PATH..."
+        rm -f "$TEST_FILE_PATH"
+        [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: Cleanup complete."
+    fi
+}
+trap cleanup EXIT SIGINT SIGTERM
+
+# --- Argument Parsing ---
+if [ "$#" -eq 0 ]; then
+    usage
+    exit 0
+fi
+
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        -t|--target-dir)
+            TARGET_DIR="$2"; shift 2 ;;
+        -s|--filesize)
+            SPECIFIED_TEST_SIZE="$2"
+            if ! [[ "$SPECIFIED_TEST_SIZE" =~ ^[0-9]+[mgMG]$ ]]; then
+                echo "ERROR: Invalid filesize format for -s/--filesize. Use <number>[m|g], e.g., 512m, 1g." >&2
+                usage; exit 1
+            fi
+            SPECIFIED_TEST_SIZE=$(echo "$SPECIFIED_TEST_SIZE" | tr '[:upper:]' '[:lower:]')
+            shift 2
+            ;;
+        -r|--rounds)
+            TEST_ROUNDS="$2"
+            if ! [[ "$TEST_ROUNDS" =~ ^[1-9][0-9]*$ ]] || [ "$TEST_ROUNDS" -lt 1 ]; then
+                echo "ERROR: Invalid number for -r/--rounds. Must be a positive integer." >&2
+                usage; exit 1
+            fi
+            shift 2
+            ;;
+        -v|--verbose)
+            VERBOSE_OUTPUT=1; shift ;;
+        -h|--help)
+            usage; exit 0 ;;
+        *)
+            echo "ERROR: Unknown parameter passed: $1" >&2
+            usage; exit 1 ;;
+    esac
+done
+
+if [ -z "$TARGET_DIR" ]; then
+    echo "ERROR: Target directory (-t or --target-dir) is required." >&2
+    usage; exit 1
+fi
+
+# --- Pre-run Checks ---
+check_tools 
+
+TARGET_DIR_NORMALIZED="${TARGET_DIR%/}"
+TEST_FILE_PATH="${TARGET_DIR_NORMALIZED}/${TEST_FILE_NAME}"
+
+if [ ! -d "$TARGET_DIR_NORMALIZED" ]; then
+    echo "ERROR: Target directory '$TARGET_DIR_NORMALIZED' does not exist."
+    exit 1
+fi
+if ! touch "${TARGET_DIR_NORMALIZED}/.disk_mark_me_write_test" 2>/dev/null; then
+    echo "ERROR: Target directory '$TARGET_DIR_NORMALIZED' is not writable."
+    exit 1
+else
+    rm -f "${TARGET_DIR_NORMALIZED}/.disk_mark_me_write_test"
+fi
+
+# --- Disk Space Check ---
+if [ "$VERBOSE_OUTPUT" -eq 1 ]; then
+    echo "INFO: Checking available disk space..."
+fi
+filesize_for_numfmt=$(echo "$SPECIFIED_TEST_SIZE" | tr '[:lower:]' '[:upper:]')
+test_size_bytes=$(numfmt --from=iec "$filesize_for_numfmt")
+
+if [ -z "$test_size_bytes" ] || [ "$test_size_bytes" -le 0 ]; then
+    echo "ERROR: Could not determine test file size in bytes for '$SPECIFIED_TEST_SIZE'."
+    exit 1
+fi
+
+required_space_bytes=$((test_size_bytes * 2))
+available_space_kb=$(df -P -k "$TARGET_DIR_NORMALIZED" 2>/dev/null | awk 'NR==2 {print $4}')
+available_space_bytes="" 
+
+if [ -n "$available_space_kb" ] && [[ "$available_space_kb" =~ ^[0-9]+$ ]]; then
+    available_space_bytes=$((available_space_kb * 1024))
+else
+    echo "ERROR: Could not parse available disk space (KB value: '$available_space_kb')."
+    [ "$VERBOSE_OUTPUT" -eq 1 ] && { echo "       'df -P -k $TARGET_DIR_NORMALIZED' output:"; df -P -k "$TARGET_DIR_NORMALIZED"; }
+    exit 1
+fi
+
+if [ -z "$available_space_bytes" ]; then 
+    echo "ERROR: Could not determine available disk space for '$TARGET_DIR_NORMALIZED'."
+    [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "       'df' command might have failed or produced unexpected output."
+    exit 1
+fi
+
+if [ "$available_space_bytes" -lt "$required_space_bytes" ]; then
+    hr_test_size=$(numfmt --to=iec "$test_size_bytes")
+    hr_required_space=$(numfmt --to=iec "$required_space_bytes")
+    hr_available_space=$(numfmt --to=iec "$available_space_bytes")
+    echo "ERROR: Insufficient disk space on '$TARGET_DIR_NORMALIZED'."
+    echo "       Test file size: $hr_test_size."
+    echo "       Required free space (2x test file size): $hr_required_space."
+    echo "       Available free space: $hr_available_space."
+    exit 1
+fi
+if [ "$VERBOSE_OUTPUT" -eq 1 ]; then
+    echo "INFO: Disk space check passed. Available: $(numfmt --to=iec "$available_space_bytes"), Required: $(numfmt --to=iec "$required_space_bytes")."
+fi
+
+
+# --- Main Script ---
+print_header
+
+echo "[Read]"
+run_fio_test "SEQ   1MiB (Q= 8, T=1)" "read" "1M" "8" "1" || { echo "ERROR: Read test failed, aborting."; exit 1; }
+run_fio_test "SEQ   1MiB (Q= 1, T=1)" "read" "1M" "1" "1" || { echo "ERROR: Read test failed, aborting."; exit 1; }
+run_fio_test "RND   4KiB (Q=32, T=1)" "randread" "4k" "32" "1" || { echo "ERROR: Read test failed, aborting."; exit 1; }
+run_fio_test "RND   4KiB (Q= 1, T=1)" "randread" "4k" "1" "1" || { echo "ERROR: Read test failed, aborting."; exit 1; }
+echo
+
+echo "[Write]"
+if [ -f "$TEST_FILE_PATH" ]; then
+    # Only show this if verbose, or if it's actually happening
+    [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: Removing existing test file before write tests section."
+    rm -f "$TEST_FILE_PATH"
+fi
+run_fio_test "SEQ   1MiB (Q= 8, T=1)" "write" "1M" "8" "1" || { echo "ERROR: Write test failed, aborting."; exit 1; }
+run_fio_test "SEQ   1MiB (Q= 1, T=1)" "write" "1M" "1" "1" || { echo "ERROR: Write test failed, aborting."; exit 1; }
+run_fio_test "RND   4KiB (Q=32, T=1)" "randwrite" "4k" "32" "1" || { echo "ERROR: Write test failed, aborting."; exit 1; }
+run_fio_test "RND   4KiB (Q= 1, T=1)" "randwrite" "4k" "1" "1" || { echo "ERROR: Write test failed, aborting."; exit 1; }
+echo
+
+echo "Benchmark complete."
+if [ "$VERBOSE_OUTPUT" -eq 1 ] && [ "$TEST_ROUNDS" -gt 1 ]; then
+    echo "Note: Results shown are averages of $TEST_ROUNDS rounds."
+fi
+exit 0
