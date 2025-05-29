@@ -1,5 +1,5 @@
 #!/bin/bash
-# disk-mark-me v1.1.3
+# disk-mark-me v1.1.5
 # Author: [Your Name/Handle Here - Optional]
 # Date: $(date +%Y-%m-%d)
 # Description: fio-based disk benchmark tool (mimics CrystalDiskMark profile).
@@ -15,11 +15,11 @@ TEST_FILE_NAME="fio_benchmark_temp.dat"
 TEST_FILE_PATH=""
 TEST_ROUNDS=$DEFAULT_TEST_ROUNDS
 SPECIFIED_TEST_SIZE=$DEFAULT_TEST_SIZE
-VERBOSE_OUTPUT=0 # 0 for false, 1 for true
+VERBOSE_OUTPUT=0 # 0 for false (default), 1 for true
 
 # --- Helper Functions ---
 function usage() {
-    echo "disk-mark-me v1.1.3: fio-based disk benchmark tool"
+    echo "disk-mark-me v1.1.5: fio-based disk benchmark tool"
     echo ""
     echo "Usage: $0 -t /path/to/target_directory [OPTIONS]"
     echo ""
@@ -31,7 +31,7 @@ function usage() {
     echo "                         Examples: 128m, 512m, 1g, 2g. (Default: ${DEFAULT_TEST_SIZE})"
     echo "  -r, --rounds NUM       Number of times to run each test configuration and average results."
     echo "                         (Default: ${DEFAULT_TEST_ROUNDS})"
-    echo "  -v, --verbose          Enable verbose output (shows per-round details)."
+    echo "  -v, --verbose          Enable verbose output (shows per-round details and INFO messages)."
     echo "  -h, --help             Show this help message and exit."
     echo ""
     echo "Example:"
@@ -42,7 +42,7 @@ function usage() {
 }
 
 function check_tools() {
-    echo "INFO: Checking for required tools..."
+    [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: Checking for required tools..."
     local missing_tool_count=0
     REQUIRED_TOOLS=("fio" "numfmt" "grep" "awk" "bc" "df" "stat" "id" "touch" "rm")
 
@@ -55,7 +55,6 @@ function check_tools() {
 
     if ! grep -P "test" <<< "test" &> /dev/null; then
         echo "ERROR: Your 'grep' version does not support -P (PCRE regexes), which is required."
-        echo "       Please install a 'grep' version with PCRE support (e.g., GNU grep)."
         missing_tool_count=$((missing_tool_count + 1))
     fi
 
@@ -63,42 +62,33 @@ function check_tools() {
         echo "ERROR: Please install missing tools or ensure they are in your PATH, then try again."
         exit 1
     fi
-    if [ "$VERBOSE_OUTPUT" -eq 0 ]; then # Only show "All tools found" if not verbose, to keep startup clean
-        echo "INFO: All required tools found."
-    fi
+    [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: All required tools found."
 }
 
 function print_header() {
     echo "------------------------------------------------------------------------------"
-    echo "disk-mark-me v1.1.3 - fio v$(fio --version | awk '{print $1}' | sed 's/fio-//')"
+    echo "disk-mark-me v1.1.5 - fio v$(fio --version | awk '{print $1}' | sed 's/fio-//')"
     echo "------------------------------------------------------------------------------"
     echo "* MB/s = 1,000,000 bytes/s"
     local normalized_target_dir="${TARGET_DIR%/}"
     echo "* Target: ${normalized_target_dir} | Test File Size: ${SPECIFIED_TEST_SIZE} (IEC) | Rounds: ${TEST_ROUNDS}"
-    if [ "$VERBOSE_OUTPUT" -eq 1 ]; then
-        echo "* Verbose output enabled."
-    fi
+    [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "* Verbose output enabled."
     echo
 }
 
 function clear_caches() {
-    if [ "$VERBOSE_OUTPUT" -eq 1 ]; then
-        echo -n "INFO: Attempting to clear disk caches... "
-    fi
-    # Actual cache clearing logic
+    [ "$VERBOSE_OUTPUT" -eq 1 ] && echo -n "INFO: Attempting to clear disk caches... "
     if [ "$(id -u)" -eq 0 ]; then
-        sync
-        echo 3 > /proc/sys/vm/drop_caches
+        sync; echo 3 > /proc/sys/vm/drop_caches >/dev/null 2>&1 
         [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Done (running as root)."
     elif command -v sudo &> /dev/null; then
         if sudo -n true 2>/dev/null; then
-            sudo sync
-            sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
+            sudo sync; sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1 
             [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Done (using sudo without password)."
         else
             [ "$VERBOSE_OUTPUT" -eq 1 ] && {
                 echo "Sudo requires a password or is not configured for NOPASSWD for cache clearing."
-                echo "      Skipping cache clear to avoid hanging script. Read results might be inflated by OS cache."
+                echo "      Skipping cache clear. Read results might be inflated by OS cache."
             }
         fi
     else
@@ -119,12 +109,6 @@ function run_fio_test() {
     local current_run_mb_s
     local current_run_iops
 
-    local test_size_for_numfmt 
-    test_size_for_numfmt=$(echo "$SPECIFIED_TEST_SIZE" | tr '[:lower:]' '[:upper:]')
-
-    local test_size_bytes
-    test_size_bytes=$(numfmt --from=iec "$test_size_for_numfmt" 2>/dev/null) # Error handling for this is done pre-run
-
     local block_size_bytes_for_calc=0
     if [[ "$block_size_str" == "4k" ]]; then
         block_size_bytes_for_calc=4096
@@ -132,7 +116,6 @@ function run_fio_test() {
         block_size_bytes_for_calc=1048576
     fi
 
-    # Only print this once per test configuration, not per round if not verbose
     if [ "$VERBOSE_OUTPUT" -eq 1 ]; then
         echo "Running ${test_label} (${rw_mode}, bs=${block_size_str}, Q=${io_depth}, T=${num_jobs})"
     fi
@@ -141,15 +124,8 @@ function run_fio_test() {
         current_run_mb_s="0.000" 
         current_run_iops="0.0"   
 
-        if [ "$VERBOSE_OUTPUT" -eq 1 ]; then
-            echo -n "  Round $r/$TEST_ROUNDS... "
-        elif [ "$TEST_ROUNDS" -eq 1 ] && [ "$r" -eq 1 ]; then # Show "Executing..." only for single round
-            echo -n "Running ${test_label}... "
-        elif [ "$r" -eq 1 ]; then # For multiple rounds, non-verbose, show "Running..." once.
-             echo -n "Running ${test_label}... "
-        fi
-
-
+        [ "$VERBOSE_OUTPUT" -eq 1 ] && echo -n "  Round $r/$TEST_ROUNDS... "
+        
         local current_fio_opts_array=( \
             "--name=${test_label// /_}_run${r}" \
             "--filename=${TEST_FILE_PATH}" \
@@ -166,31 +142,17 @@ function run_fio_test() {
         )
 
         if [[ "$rw_mode" == "read" || "$rw_mode" == "randread" ]]; then
-            local file_exists_correctly=0
-            if [ -f "$TEST_FILE_PATH" ]; then
-                local size_for_numfmt_check=$(echo "$SPECIFIED_TEST_SIZE" | tr '[:lower:]' '[:upper:]')
-                local current_test_size_bytes_for_check
-                current_test_size_bytes_for_check=$(numfmt --from=iec "$size_for_numfmt_check" 2>/dev/null)
-                local current_file_size=$(stat -c%s "$TEST_FILE_PATH")
-
-                if [ -n "$current_test_size_bytes_for_check" ] && [ "$current_file_size" -ge "$current_test_size_bytes_for_check" ]; then
-                    file_exists_correctly=1
-                fi
-            fi
-
-            if [ "$file_exists_correctly" -eq 0 ]; then
-                if [ "$VERBOSE_OUTPUT" -eq 1 ] || [ "$r" -eq 1 ]; then # Show only on first round or if verbose
-                    echo "INFO: Test file ${TEST_FILE_PATH} not found/small. Creating/resizing to ${SPECIFIED_TEST_SIZE}..."
-                fi
+            if [ ! -f "$TEST_FILE_PATH" ]; then 
+                [ "$VERBOSE_OUTPUT" -eq 1 ] && echo -n "INFO: Creating test file ${TEST_FILE_PATH} (${SPECIFIED_TEST_SIZE})... " # -n to keep on same line if possible
                 fio --name=prep_read_file --filename="$TEST_FILE_PATH" --size="$SPECIFIED_TEST_SIZE" \
                     --rw=write --bs=1M --direct=1 --ioengine=libaio --fallocate=none > /dev/null 2>&1
                 if [ $? -ne 0 ]; then 
                     [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "ERROR: Failed to create test file for round $r."
                     continue; 
                 fi 
-                [ "$VERBOSE_OUTPUT" -eq 1 ] || [ "$r" -eq 1 ] && echo "INFO: Test file created/resized."
+                [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Created."
             fi
-            clear_caches # clear_caches itself checks VERBOSE_OUTPUT
+            clear_caches 
             current_fio_opts_array+=(--readonly)
         fi
         
@@ -229,12 +191,9 @@ function run_fio_test() {
         fi
     done 
 
-    if [ "$VERBOSE_OUTPUT" -eq 0 ]; then # If not verbose, print "Done." on the same line as "Running..."
-        echo "Done."
-    fi
-
     if [ "$successful_runs" -eq 0 ]; then
-        echo "ERROR: All rounds failed for ${test_label}."
+        # If not verbose, the "Running..." line was not printed, so we need to identify the test
+        [ "$VERBOSE_OUTPUT" -eq 0 ] && echo "ERROR: All rounds failed for ${test_label}."
         return 1
     fi
 
@@ -244,7 +203,6 @@ function run_fio_test() {
     [[ "$avg_mb_s" == ".000" || "$avg_mb_s" == "-.000" ]] && avg_mb_s="0.000"
     [[ "$avg_iops" == ".0" || "$avg_iops" == "-.0" ]] && avg_iops="0.0"
 
-    # Final output line format
     if [ "$VERBOSE_OUTPUT" -eq 1 ] && [ "$TEST_ROUNDS" -gt 1 ]; then
         printf "  %-23s: %9s MB/s [%9s IOPS] (Avg of %d runs)\n" "$test_label" "$avg_mb_s" "$avg_iops" "$successful_runs"
     else
@@ -254,6 +212,7 @@ function run_fio_test() {
 }
 
 function cleanup() {
+    # ... (same as v1.1.4) ...
     if [ -n "$TEST_FILE_PATH" ] && [ -f "$TEST_FILE_PATH" ]; then
         [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: Cleaning up test file: $TEST_FILE_PATH..."
         rm -f "$TEST_FILE_PATH"
@@ -263,6 +222,7 @@ function cleanup() {
 trap cleanup EXIT SIGINT SIGTERM
 
 # --- Argument Parsing ---
+# ... (same as v1.1.4) ...
 if [ "$#" -eq 0 ]; then
     usage
     exit 0
@@ -289,7 +249,7 @@ while [[ "$#" -gt 0 ]]; do
             fi
             shift 2
             ;;
-        -v|--verbose)
+        -v|--verbose) 
             VERBOSE_OUTPUT=1; shift ;;
         -h|--help)
             usage; exit 0 ;;
@@ -322,9 +282,7 @@ else
 fi
 
 # --- Disk Space Check ---
-if [ "$VERBOSE_OUTPUT" -eq 1 ]; then
-    echo "INFO: Checking available disk space..."
-fi
+[ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: Checking available disk space..."
 filesize_for_numfmt=$(echo "$SPECIFIED_TEST_SIZE" | tr '[:lower:]' '[:upper:]')
 test_size_bytes=$(numfmt --from=iec "$filesize_for_numfmt")
 
@@ -361,9 +319,7 @@ if [ "$available_space_bytes" -lt "$required_space_bytes" ]; then
     echo "       Available free space: $hr_available_space."
     exit 1
 fi
-if [ "$VERBOSE_OUTPUT" -eq 1 ]; then
-    echo "INFO: Disk space check passed. Available: $(numfmt --to=iec "$available_space_bytes"), Required: $(numfmt --to=iec "$required_space_bytes")."
-fi
+[ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: Disk space check passed. Available: $(numfmt --to=iec "$available_space_bytes"), Required: $(numfmt --to=iec "$required_space_bytes")."
 
 
 # --- Main Script ---
@@ -378,7 +334,6 @@ echo
 
 echo "[Write]"
 if [ -f "$TEST_FILE_PATH" ]; then
-    # Only show this if verbose, or if it's actually happening
     [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: Removing existing test file before write tests section."
     rm -f "$TEST_FILE_PATH"
 fi
