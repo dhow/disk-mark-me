@@ -11,6 +11,7 @@
     *   Target directory for the benchmark.
     *   Test file size.
     *   Number of rounds per test configuration (results are averaged).
+    *   Specific benchmark types to run (read, write, or both).
 *   Verbose mode for detailed per-round output and informational messages.
 *   Pre-run checks for required tools and sufficient disk space.
 *   Clears disk caches before read tests for more accurate results (if permissions allow).
@@ -26,7 +27,7 @@ The script runs the following test configurations, mirroring CrystalDiskMark's d
 | RND  | 4 KiB      | 32     | 1       |
 | RND  | 4 KiB      | 1      | 1       |
 
-Both Read and Write operations are tested for each configuration.
+By default, both Read and Write operations are tested for each configuration. This can be controlled using the `-b` option.
 
 ## Prerequisites
 
@@ -34,7 +35,7 @@ The script requires the following command-line tools to be installed and accessi
 
 *   `fio`: The core I/O benchmarking engine.
 *   `numfmt`: For number formatting (part of GNU Coreutils).
-*   Standard utilities: `grep` (with PCRE/-P support), `awk` (GNU awk `gawk` recommended if available), `bc`, `df`, `stat`, `id`, `touch`, and `rm`. These are usually present on most Linux systems, but the script will check for them.
+*   Standard utilities: `grep` (with PCRE/-P support), `awk` (GNU awk `gawk` recommended if available), `bc`, `df`, `stat`, `id`, `touch`, and `rm`. These are usually present on most Linux systems, but the script will check for them and list any missing ones.
 
 `sudo` is optional but recommended if you want the script to attempt clearing disk caches before read tests (requires appropriate sudo permissions without a password prompt for the cache-clearing commands, or running the script as root).
 
@@ -49,21 +50,8 @@ On JELOS/ROCKNIX, these tools can be installed via Entware.
    ```
    Follow the on-screen prompts. It may ask to reboot to complete the installation.
 
-**2. Configure PATH Environment Variable (if needed):**
-   After Entware is installed (and after a reboot if prompted), ensure `/opt/bin` and `/opt/sbin` are in your system's `PATH`. The Entware installer typically reminds you or sets this up.
-   To check your current PATH: `echo $PATH`
-   If `/opt/bin` is missing, for your current session:
-   ```bash
-   export PATH=/opt/bin:/opt/sbin:$PATH
-   ```
-   To make this change permanent (example for the `root` user):
-   ```bash
-   echo 'export PATH=/opt/bin:/opt/sbin:$PATH' >> /root/.profile
-   # Then log out and log back in, or run: source /root/.profile
-   ```
-
-**3. Install Required Packages via opkg:**
-   Use `opkg` (Entware's package manager) to install the necessary tools:
+**2. Install Required Packages via opkg:**
+   After reboot (if prompted by Entware installation), use `opkg` (Entware's package manager) to install the necessary tools:
    ```bash
    opkg update
    opkg install fio coreutils coreutils-numfmt
@@ -71,8 +59,9 @@ On JELOS/ROCKNIX, these tools can be installed via Entware.
    *   `fio`: The core benchmarking tool.
    *   `coreutils`: Provides Entware's versions of `df`, `stat`, `id`, `touch`, `rm`.
    *   `coreutils-numfmt`: For the `numfmt` utility.
+   *   The script also relies on `bc`, `grep`, and `awk`. These are typically present. If the script reports them as missing, install them via `opkg install bc gawk grep`.
 
-**4. Verify Tools:**
+**3. Verify Tools:**
    After installation, you can verify the tools are found:
 
    ```bash
@@ -88,8 +77,8 @@ There are two main ways to install `disk-mark-me`:
 
 1.  Download the `disk-mark-me` script to your device.
     ```bash
-    # Example using curl (ensure the URL points to the raw script file):
-    curl -LO https://raw.githubusercontent.com/dhow/disk-mark-me/refs/heads/main/disk-mark-me
+    # Example using curl (replace with your actual repository URL):
+    curl -LO https://raw.githubusercontent.com/dhow/disk-mark-me/main/disk-mark-me
     # Or copy it manually.
     ```
 2.  Make it executable:
@@ -97,6 +86,16 @@ There are two main ways to install `disk-mark-me`:
     chmod +x disk-mark-me
     ```
 3.  You can now run it directly from its current location (e.g., `./disk-mark-me ...`).
+4.  (Optional) To make it accessible system-wide, move it to a directory in your `PATH`:
+    ```bash
+    # Example for user-local installation (common):
+    mkdir -p ~/.local/bin
+    mv disk-mark-me ~/.local/bin/
+    # Ensure ~/.local/bin is in your PATH.
+    
+    # Example for system-wide installation (may require sudo):
+    # sudo mv disk-mark-me /usr/local/bin/
+    ```
 
 **Method 2: Using the Makefile (Recommended for easy updates/uninstalls)**
 
@@ -104,14 +103,13 @@ If you have `make` installed on your system and have downloaded both `disk-mark-
 
 1.  **Download Script and Makefile:**
     Ensure both `disk-mark-me` and `Makefile` are in your current directory.
-    
     ```bash
-    # Example using curl for both:
-    curl -LO https://raw.githubusercontent.com/dhow/disk-mark-me/refs/heads/main/disk-mark-me
-    curl -LO https://raw.githubusercontent.com/dhow/disk-mark-me/refs/heads/main/Makefile
+    # Example using curl for both (replace with your actual repository URLs):
+    curl -LO https://raw.githubusercontent.com/dhow/disk-mark-me/main/disk-mark-me
+    curl -LO https://raw.githubusercontent.com/dhow/disk-mark-me/main/Makefile
     chmod +x disk-mark-me # Make the script executable
     ```
-    
+
 2.  **Install:**
     *   **User-local installation (default, to `~/.local/bin`):**
         ```bash
@@ -172,29 +170,31 @@ If you have `make` installed on your system and have downloaded both `disk-mark-
 *   `-s, --filesize SIZE`: Test file size. Suffix 'm' for MiB (e.g., 128m, 512m) or 'g' for GiB (e.g., 1g, 2g). `fio` interprets these as IEC units (powers of 1024).
     (Default: `1g`)
 *   `-r, --rounds NUM`: Number of times to run each test configuration. Results (MB/s and IOPS) will be averaged.
-    (Default: `1`)
+    (Default: `5`)
+*   `-b, --benchmark TYPE`: Type of benchmark to run: 'read', 'write', or 'both'.
+    (Default: `both`)
 *   `-v, --verbose`: Enable verbose output, showing per-round details and more informational messages.
 *   `-h, --help`: Show the help message and exit.
 
 **Examples:**
 
-*   Run a default benchmark on an SD card mounted at `/mnt/sdcard`:
+*   Run a default benchmark (5 rounds, 1GiB file, read & write tests) on an SD card mounted at `/mnt/sdcard`:
     ```bash
     ./disk-mark-me -t /mnt/sdcard
     ```
-*   Run 3 rounds using a 512MiB test file, with verbose output:
+*   Run only read tests, 3 rounds, using a 512MiB test file, with verbose output:
     ```bash
-    ./disk-mark-me -t /media/my_usb -s 512m -r 3 -v
+    ./disk-mark-me -t /media/my_usb -s 512m -r 3 -b read -v
     ```
 
-## Example Output (Non-Verbose, v1.1.5)
+## Example Output (Non-Verbose, v1.1.8 - defaults used)
 
 ```
 ------------------------------------------------------------------------------
-disk-mark-me v1.1.5 - fio v3.37 
+disk-mark-me v1.1.8 - fio v3.37 
 ------------------------------------------------------------------------------
 * MB/s = 1,000,000 bytes/s
-* Target: . | Test File Size: 1g (IEC) | Rounds: 1
+* Target: . | Test File Size: 1g (IEC) | Rounds: 5
 
 [Read]
   SEQ   1MiB (Q= 8, T=1) : 19503.513 MB/s [  18600.0 IOPS]
@@ -213,7 +213,7 @@ Benchmark complete.
 
 ## Important Notes
 
-*   **Test Duration:** Benchmarks can take a significant amount of time, especially with larger file sizes, multiple rounds, or on slower storage.
+*   **Test Duration:** Benchmarks can take a significant amount of time, especially with larger file sizes, multiple rounds, or on slower storage. Defaulting to 5 rounds will increase test time compared to a single round.
 *   **SD Card Wear:** Running intensive write benchmarks frequently can contribute to the wear of SD cards. Use judiciously.
 *   **System Load:** For best results, ensure the system is relatively idle during the benchmark. Other I/O-intensive processes can skew results.
 *   **Tool Versions:** The script is designed to work with common versions of GNU utilities. BusyBox versions (common on embedded systems) can sometimes have slightly different option support (e.g., `df -B` vs `df -k`). The script attempts to use compatible options.
@@ -225,4 +225,3 @@ Feel free to open an issue or submit a pull request for improvements or bug fixe
 ## License
 
 This script is released under the [MIT License](LICENSE.txt) (or choose another appropriate open-source license).
-

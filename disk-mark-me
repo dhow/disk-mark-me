@@ -1,13 +1,17 @@
 #!/bin/bash
-# disk-mark-me v1.1.5
-# Author: [Your Name/Handle Here - Optional]
-# Date: $(date +%Y-%m-%d)
-# Description: fio-based disk benchmark tool (mimics CrystalDiskMark profile).
-#              Requires fio, numfmt, and other standard GNU/Linux utilities.
+# disk-mark-me v1.1.8
+# Author: dhow
+# Date: 2024-05-30 
+# Description: disk-mark-me is a shell script that presents disk benchmark results
+#              in a format similar to CrystalDiskMark's default profile, by leveraging
+#              fio (Flexible I/O Tester). It is designed for Linux-based systems,
+#              including embedded devices like handheld gaming consoles running
+#              JELOS or ROCKNIX.
 
 # --- Default Configuration ---
-DEFAULT_TEST_ROUNDS=1
-DEFAULT_TEST_SIZE="1g" 
+DEFAULT_TEST_ROUNDS=5 
+DEFAULT_TEST_SIZE="1g"
+DEFAULT_BENCHMARK_TYPE="both"
 
 # --- Global Variables ---
 TARGET_DIR=""
@@ -15,11 +19,12 @@ TEST_FILE_NAME="fio_benchmark_temp.dat"
 TEST_FILE_PATH=""
 TEST_ROUNDS=$DEFAULT_TEST_ROUNDS
 SPECIFIED_TEST_SIZE=$DEFAULT_TEST_SIZE
-VERBOSE_OUTPUT=0 # 0 for false (default), 1 for true
+VERBOSE_OUTPUT=0 
+BENCHMARK_TYPE=$DEFAULT_BENCHMARK_TYPE
 
 # --- Helper Functions ---
 function usage() {
-    echo "disk-mark-me v1.1.5: fio-based disk benchmark tool"
+    echo "disk-mark-me v1.1.8: fio-based disk benchmark tool" # Updated version
     echo ""
     echo "Usage: $0 -t /path/to/target_directory [OPTIONS]"
     echo ""
@@ -30,36 +35,43 @@ function usage() {
     echo "  -s, --filesize SIZE    Test file size. Suffix 'm' for MiB, 'g' for GiB (fio convention)."
     echo "                         Examples: 128m, 512m, 1g, 2g. (Default: ${DEFAULT_TEST_SIZE})"
     echo "  -r, --rounds NUM       Number of times to run each test configuration and average results."
-    echo "                         (Default: ${DEFAULT_TEST_ROUNDS})"
+    echo "                         (Default: ${DEFAULT_TEST_ROUNDS})" 
+    echo "  -b, --benchmark TYPE   Type of benchmark to run: 'read', 'write', or 'both'."
+    echo "                         (Default: ${DEFAULT_BENCHMARK_TYPE})"
     echo "  -v, --verbose          Enable verbose output (shows per-round details and INFO messages)."
     echo "  -h, --help             Show this help message and exit."
     echo ""
     echo "Example:"
-    echo "  $0 -t /mnt/sdcard -s 512m -r 3 -v"
-    echo ""
-    echo "Prerequisites: fio, numfmt, grep (with PCRE/-P support), awk, bc, df, stat, id, touch, rm."
-    echo "               Ensure these tools are installed and in your system PATH."
+    echo "  $0 -t /mnt/sdcard -s 512m -r 3 -b read"
 }
 
 function check_tools() {
     [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: Checking for required tools..."
     local missing_tool_count=0
-    REQUIRED_TOOLS=("fio" "numfmt" "grep" "awk" "bc" "df" "stat" "id" "touch" "rm")
+    local missing_tools_list=""
+    DECLARED_PREREQUISITES=("fio" "numfmt" "grep" "awk" "bc" "df" "stat" "id" "touch" "rm")
 
-    for tool in "${REQUIRED_TOOLS[@]}"; do
+    for tool in "${DECLARED_PREREQUISITES[@]}"; do
         if ! command -v "$tool" &> /dev/null; then
-            echo "ERROR: Required tool '$tool' is not installed or not in PATH."
+            missing_tools_list+="$tool "
             missing_tool_count=$((missing_tool_count + 1))
         fi
     done
 
     if ! grep -P "test" <<< "test" &> /dev/null; then
-        echo "ERROR: Your 'grep' version does not support -P (PCRE regexes), which is required."
-        missing_tool_count=$((missing_tool_count + 1))
+        if [[ ! "$missing_tools_list" == *"grep"* ]]; then
+             echo "ERROR: Your 'grep' version does not support -P (PCRE regexes)."
+        fi
+        missing_tools_list+="grep (with PCRE support) " 
+        missing_tool_count=$((missing_tool_count + 1)) 
     fi
 
     if [ "$missing_tool_count" -gt 0 ]; then
-        echo "ERROR: Please install missing tools or ensure they are in your PATH, then try again."
+        echo "ERROR: One or more required tools are missing or not functional:"
+        echo "       ${missing_tools_list}"
+        echo "       Please install them or ensure they are in your system's PATH."
+        echo "       Common prerequisites include: fio, numfmt, grep (PCRE), awk, bc, df, stat, id, touch, rm."
+        echo "       Refer to the README.md for system-specific installation instructions (e.g., for JELOS/ROCKNIX using Entware)."
         exit 1
     fi
     [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: All required tools found."
@@ -67,7 +79,7 @@ function check_tools() {
 
 function print_header() {
     echo "------------------------------------------------------------------------------"
-    echo "disk-mark-me v1.1.5 - fio v$(fio --version | awk '{print $1}' | sed 's/fio-//')"
+    echo "disk-mark-me v1.1.8 - fio v$(fio --version | awk '{print $1}' | sed 's/fio-//')" # Updated version
     echo "------------------------------------------------------------------------------"
     echo "* MB/s = 1,000,000 bytes/s"
     local normalized_target_dir="${TARGET_DIR%/}"
@@ -143,7 +155,7 @@ function run_fio_test() {
 
         if [[ "$rw_mode" == "read" || "$rw_mode" == "randread" ]]; then
             if [ ! -f "$TEST_FILE_PATH" ]; then 
-                [ "$VERBOSE_OUTPUT" -eq 1 ] && echo -n "INFO: Creating test file ${TEST_FILE_PATH} (${SPECIFIED_TEST_SIZE})... " # -n to keep on same line if possible
+                [ "$VERBOSE_OUTPUT" -eq 1 ] && echo -n "INFO: Creating test file ${TEST_FILE_PATH} (${SPECIFIED_TEST_SIZE})... " 
                 fio --name=prep_read_file --filename="$TEST_FILE_PATH" --size="$SPECIFIED_TEST_SIZE" \
                     --rw=write --bs=1M --direct=1 --ioengine=libaio --fallocate=none > /dev/null 2>&1
                 if [ $? -ne 0 ]; then 
@@ -192,7 +204,6 @@ function run_fio_test() {
     done 
 
     if [ "$successful_runs" -eq 0 ]; then
-        # If not verbose, the "Running..." line was not printed, so we need to identify the test
         [ "$VERBOSE_OUTPUT" -eq 0 ] && echo "ERROR: All rounds failed for ${test_label}."
         return 1
     fi
@@ -212,7 +223,6 @@ function run_fio_test() {
 }
 
 function cleanup() {
-    # ... (same as v1.1.4) ...
     if [ -n "$TEST_FILE_PATH" ] && [ -f "$TEST_FILE_PATH" ]; then
         [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: Cleaning up test file: $TEST_FILE_PATH..."
         rm -f "$TEST_FILE_PATH"
@@ -222,7 +232,6 @@ function cleanup() {
 trap cleanup EXIT SIGINT SIGTERM
 
 # --- Argument Parsing ---
-# ... (same as v1.1.4) ...
 if [ "$#" -eq 0 ]; then
     usage
     exit 0
@@ -245,6 +254,14 @@ while [[ "$#" -gt 0 ]]; do
             TEST_ROUNDS="$2"
             if ! [[ "$TEST_ROUNDS" =~ ^[1-9][0-9]*$ ]] || [ "$TEST_ROUNDS" -lt 1 ]; then
                 echo "ERROR: Invalid number for -r/--rounds. Must be a positive integer." >&2
+                usage; exit 1
+            fi
+            shift 2
+            ;;
+        -b|--benchmark) 
+            BENCHMARK_TYPE=$(echo "$2" | tr '[:upper:]' '[:lower:]') 
+            if [[ "$BENCHMARK_TYPE" != "read" && "$BENCHMARK_TYPE" != "write" && "$BENCHMARK_TYPE" != "both" ]]; then
+                echo "ERROR: Invalid value for -b/--benchmark. Must be 'read', 'write', or 'both'." >&2
                 usage; exit 1
             fi
             shift 2
@@ -325,26 +342,31 @@ fi
 # --- Main Script ---
 print_header
 
-echo "[Read]"
-run_fio_test "SEQ   1MiB (Q= 8, T=1)" "read" "1M" "8" "1" || { echo "ERROR: Read test failed, aborting."; exit 1; }
-run_fio_test "SEQ   1MiB (Q= 1, T=1)" "read" "1M" "1" "1" || { echo "ERROR: Read test failed, aborting."; exit 1; }
-run_fio_test "RND   4KiB (Q=32, T=1)" "randread" "4k" "32" "1" || { echo "ERROR: Read test failed, aborting."; exit 1; }
-run_fio_test "RND   4KiB (Q= 1, T=1)" "randread" "4k" "1" "1" || { echo "ERROR: Read test failed, aborting."; exit 1; }
-echo
-
-echo "[Write]"
-if [ -f "$TEST_FILE_PATH" ]; then
-    [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: Removing existing test file before write tests section."
-    rm -f "$TEST_FILE_PATH"
+if [[ "$BENCHMARK_TYPE" == "read" || "$BENCHMARK_TYPE" == "both" ]]; then
+    echo "[Read]"
+    run_fio_test "SEQ   1MiB (Q= 8, T=1)" "read" "1M" "8" "1" || { echo "ERROR: Read test failed, aborting."; exit 1; }
+    run_fio_test "SEQ   1MiB (Q= 1, T=1)" "read" "1M" "1" "1" || { echo "ERROR: Read test failed, aborting."; exit 1; }
+    run_fio_test "RND   4KiB (Q=32, T=1)" "randread" "4k" "32" "1" || { echo "ERROR: Read test failed, aborting."; exit 1; }
+    run_fio_test "RND   4KiB (Q= 1, T=1)" "randread" "4k" "1" "1" || { echo "ERROR: Read test failed, aborting."; exit 1; }
+    echo
 fi
-run_fio_test "SEQ   1MiB (Q= 8, T=1)" "write" "1M" "8" "1" || { echo "ERROR: Write test failed, aborting."; exit 1; }
-run_fio_test "SEQ   1MiB (Q= 1, T=1)" "write" "1M" "1" "1" || { echo "ERROR: Write test failed, aborting."; exit 1; }
-run_fio_test "RND   4KiB (Q=32, T=1)" "randwrite" "4k" "32" "1" || { echo "ERROR: Write test failed, aborting."; exit 1; }
-run_fio_test "RND   4KiB (Q= 1, T=1)" "randwrite" "4k" "1" "1" || { echo "ERROR: Write test failed, aborting."; exit 1; }
-echo
+
+if [[ "$BENCHMARK_TYPE" == "write" || "$BENCHMARK_TYPE" == "both" ]]; then
+    if [ -f "$TEST_FILE_PATH" ]; then
+        [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: Removing existing test file before write tests section."
+        rm -f "$TEST_FILE_PATH"
+    fi
+    echo "[Write]"
+    run_fio_test "SEQ   1MiB (Q= 8, T=1)" "write" "1M" "8" "1" || { echo "ERROR: Write test failed, aborting."; exit 1; }
+    run_fio_test "SEQ   1MiB (Q= 1, T=1)" "write" "1M" "1" "1" || { echo "ERROR: Write test failed, aborting."; exit 1; }
+    run_fio_test "RND   4KiB (Q=32, T=1)" "randwrite" "4k" "32" "1" || { echo "ERROR: Write test failed, aborting."; exit 1; }
+    run_fio_test "RND   4KiB (Q= 1, T=1)" "randwrite" "4k" "1" "1" || { echo "ERROR: Write test failed, aborting."; exit 1; }
+    echo
+fi
 
 echo "Benchmark complete."
 if [ "$VERBOSE_OUTPUT" -eq 1 ] && [ "$TEST_ROUNDS" -gt 1 ]; then
     echo "Note: Results shown are averages of $TEST_ROUNDS rounds."
 fi
+
 exit 0
