@@ -1,12 +1,12 @@
 #!/bin/bash
-# disk-mark-me v1.1.8
+# disk-mark-me v1.2.0
 # Author: dhow
-# Date: 2024-05-30 
+# Date: 2024-05-30
 # Description: disk-mark-me is a shell script that presents disk benchmark results
 #              in a format similar to CrystalDiskMark's default profile, by leveraging
 #              fio (Flexible I/O Tester). It is designed for Linux-based systems,
 #              including embedded devices like handheld gaming consoles running
-#              JELOS or ROCKNIX.
+#              JELOS / ROCKNIX, and has compatibility for macOS.
 
 # --- Default Configuration ---
 DEFAULT_TEST_ROUNDS=5 
@@ -21,10 +21,24 @@ TEST_ROUNDS=$DEFAULT_TEST_ROUNDS
 SPECIFIED_TEST_SIZE=$DEFAULT_TEST_SIZE
 VERBOSE_OUTPUT=0 
 BENCHMARK_TYPE=$DEFAULT_BENCHMARK_TYPE
+OS_TYPE="" # Will be "Linux" or "Darwin" (macOS)
 
 # --- Helper Functions ---
+function detect_os() {
+    case "$(uname -s)" in
+        Linux*)     OS_TYPE="Linux" ;;
+        Darwin*)    OS_TYPE="Darwin" ;;
+        *)          OS_TYPE="UNKNOWN" ;;
+    esac
+    [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: Detected OS: $OS_TYPE"
+    if [ "$OS_TYPE" == "UNKNOWN" ]; then
+        echo "ERROR: Unsupported operating system detected: $(uname -s)"
+        exit 1
+    fi
+}
+
 function usage() {
-    echo "disk-mark-me v1.1.8: fio-based disk benchmark tool" # Updated version
+    echo "disk-mark-me v1.2.0: fio-based disk benchmark tool"
     echo ""
     echo "Usage: $0 -t /path/to/target_directory [OPTIONS]"
     echo ""
@@ -58,11 +72,13 @@ function check_tools() {
         fi
     done
 
+    # Check for grep with PCRE support. On macOS, default grep might not have -P.
+    # Users should install GNU grep via Homebrew (`brew install grep`) if this fails on macOS.
     if ! grep -P "test" <<< "test" &> /dev/null; then
-        if [[ ! "$missing_tools_list" == *"grep"* ]]; then
+        if [[ ! "$missing_tools_list" == *"grep"* ]]; then # Avoid duplicate basic message
              echo "ERROR: Your 'grep' version does not support -P (PCRE regexes)."
         fi
-        missing_tools_list+="grep (with PCRE support) " 
+        missing_tools_list+="grep (GNU version with -P support recommended) " 
         missing_tool_count=$((missing_tool_count + 1)) 
     fi
 
@@ -71,7 +87,7 @@ function check_tools() {
         echo "       ${missing_tools_list}"
         echo "       Please install them or ensure they are in your system's PATH."
         echo "       Common prerequisites include: fio, numfmt, grep (PCRE), awk, bc, df, stat, id, touch, rm."
-        echo "       Refer to the README.md for system-specific installation instructions (e.g., for JELOS/ROCKNIX using Entware)."
+        echo "       Refer to the README.md for system-specific installation instructions."
         exit 1
     fi
     [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "INFO: All required tools found."
@@ -79,32 +95,39 @@ function check_tools() {
 
 function print_header() {
     echo "------------------------------------------------------------------------------"
-    echo "disk-mark-me v1.1.8 - fio v$(fio --version | awk '{print $1}' | sed 's/fio-//')" # Updated version
+    echo "disk-mark-me v1.2.0 - fio v$(fio --version | awk '{print $1}' | sed 's/fio-//')" 
     echo "------------------------------------------------------------------------------"
     echo "* MB/s = 1,000,000 bytes/s"
     local normalized_target_dir="${TARGET_DIR%/}"
-    echo "* Target: ${normalized_target_dir} | Test File Size: ${SPECIFIED_TEST_SIZE} (IEC) | Rounds: ${TEST_ROUNDS}"
+    echo "* Target: ${normalized_target_dir} | Test File Size: ${SPECIFIED_TEST_SIZE} (IEC) | Rounds: ${TEST_ROUNDS} | OS: ${OS_TYPE}"
     [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "* Verbose output enabled."
     echo
 }
 
 function clear_caches() {
     [ "$VERBOSE_OUTPUT" -eq 1 ] && echo -n "INFO: Attempting to clear disk caches... "
-    if [ "$(id -u)" -eq 0 ]; then
-        sync; echo 3 > /proc/sys/vm/drop_caches >/dev/null 2>&1 
-        [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Done (running as root)."
-    elif command -v sudo &> /dev/null; then
-        if sudo -n true 2>/dev/null; then
+    if [ "$OS_TYPE" == "Linux" ]; then
+        if [ "$(id -u)" -eq 0 ]; then
+            sync; echo 3 > /proc/sys/vm/drop_caches >/dev/null 2>&1 
+            [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Done (Linux: drop_caches as root)."
+        elif command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
             sudo sync; sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1 
-            [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Done (using sudo without password)."
+            [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Done (Linux: drop_caches via sudo)."
         else
-            [ "$VERBOSE_OUTPUT" -eq 1 ] && {
-                echo "Sudo requires a password or is not configured for NOPASSWD for cache clearing."
-                echo "      Skipping cache clear. Read results might be inflated by OS cache."
-            }
+            [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Skipped (Linux: no root/sudo NOPASSWD for drop_caches)."
+        fi
+    elif [ "$OS_TYPE" == "Darwin" ]; then
+        if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
+            sudo purge
+            [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Done (macOS: sudo purge)."
+        elif [ "$(id -u)" -eq 0 ]; then # If already root
+            purge
+            [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Done (macOS: purge as root)."
+        else
+            [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Skipped (macOS: no root/sudo NOPASSWD for purge)."
         fi
     else
-        [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Not root and sudo not found. Read results might be affected by OS caching."
+        [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "Skipped (Unsupported OS for cache clearing)."
     fi
 }
 
@@ -138,6 +161,7 @@ function run_fio_test() {
 
         [ "$VERBOSE_OUTPUT" -eq 1 ] && echo -n "  Round $r/$TEST_ROUNDS... "
         
+        # Base fio options
         local current_fio_opts_array=( \
             "--name=${test_label// /_}_run${r}" \
             "--filename=${TEST_FILE_PATH}" \
@@ -147,17 +171,42 @@ function run_fio_test() {
             "--numjobs=${num_jobs}" \
             "--size=${SPECIFIED_TEST_SIZE}" \
             "--direct=1" \
-            "--ioengine=libaio" \
+            # --ioengine will be added based on OS
             "--group_reporting" \
             "--output-format=normal" \
-            "--fallocate=none" \
+            # --fallocate might be OS specific
         )
+
+        # OS-specific fio options
+        if [ "$OS_TYPE" == "Linux" ]; then
+            current_fio_opts_array+=(--ioengine=libaio --fallocate=none)
+        elif [ "$OS_TYPE" == "Darwin" ]; then
+            # Using posixaio on macOS. Fallocate is Linux-specific.
+            # fio on macOS should handle file creation/extension without explicit fallocate.
+            current_fio_opts_array+=(--ioengine=posixaio)
+            # Alternatively, remove --ioengine entirely and let fio auto-detect for macOS.
+            # current_fio_opts_array+=(--ioengine=psync) # another option
+        fi
+        
+        # File preparation for read tests
+        local prep_fio_opts_array=("${current_fio_opts_array[@]}") # Copy base for prep
+        # Remove --readonly and --direct=1 if present, set rw=write for prep
+        # This part is complex if options vary wildly by OS for prep.
+        # Simpler: use a dedicated prep command.
 
         if [[ "$rw_mode" == "read" || "$rw_mode" == "randread" ]]; then
             if [ ! -f "$TEST_FILE_PATH" ]; then 
-                [ "$VERBOSE_OUTPUT" -eq 1 ] && echo -n "INFO: Creating test file ${TEST_FILE_PATH} (${SPECIFIED_TEST_SIZE})... " 
-                fio --name=prep_read_file --filename="$TEST_FILE_PATH" --size="$SPECIFIED_TEST_SIZE" \
-                    --rw=write --bs=1M --direct=1 --ioengine=libaio --fallocate=none > /dev/null 2>&1
+                [ "$VERBOSE_OUTPUT" -eq 1 ] && echo -n "INFO: Creating test file ${TEST_FILE_PATH} (${SPECIFIED_TEST_SIZE})... "
+                
+                local prep_cmd_array=(fio --name=prep_read_file --filename="$TEST_FILE_PATH" --size="$SPECIFIED_TEST_SIZE" \
+                                      --rw=write --bs=1M --direct=1) # Keep direct=1 for prep for consistency
+                if [ "$OS_TYPE" == "Linux" ]; then
+                    prep_cmd_array+=(--ioengine=libaio --fallocate=none)
+                elif [ "$OS_TYPE" == "Darwin" ]; then
+                    prep_cmd_array+=(--ioengine=posixaio) # No fallocate for macOS
+                fi
+                "${prep_cmd_array[@]}" > /dev/null 2>&1
+
                 if [ $? -ne 0 ]; then 
                     [ "$VERBOSE_OUTPUT" -eq 1 ] && echo "ERROR: Failed to create test file for round $r."
                     continue; 
@@ -171,6 +220,7 @@ function run_fio_test() {
         local result_line
         result_line=$(fio "${current_fio_opts_array[@]}" 2>/dev/null | grep -E -i " (read|write): IOPS=" | head -1)
 
+        # ... (Rest of parsing logic is the same as v1.1.8)
         if [ -n "$result_line" ]; then
             local mb_s_val_parsed
             mb_s_val_parsed=$(echo "$result_line" | grep -oP 'BW=\K[0-9.]+(?=MB/s)')
@@ -231,7 +281,11 @@ function cleanup() {
 }
 trap cleanup EXIT SIGINT SIGTERM
 
+# --- Script Initialization ---
+detect_os # Detect OS early
+
 # --- Argument Parsing ---
+# ... (same as v1.1.8) ...
 if [ "$#" -eq 0 ]; then
     usage
     exit 0
@@ -275,6 +329,7 @@ while [[ "$#" -gt 0 ]]; do
             usage; exit 1 ;;
     esac
 done
+
 
 if [ -z "$TARGET_DIR" ]; then
     echo "ERROR: Target directory (-t or --target-dir) is required." >&2
@@ -340,7 +395,7 @@ fi
 
 
 # --- Main Script ---
-print_header
+print_header # Now includes OS_TYPE
 
 if [[ "$BENCHMARK_TYPE" == "read" || "$BENCHMARK_TYPE" == "both" ]]; then
     echo "[Read]"
