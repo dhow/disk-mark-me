@@ -216,6 +216,7 @@ If you have `make` installed on your system and have downloaded both `disk-mark-
 ## Important Notes
 
 *   **Test Duration:** Benchmarks can take a significant amount of time, especially with larger file sizes, multiple rounds, or on slower storage. Defaulting to 5 rounds will increase test time compared to a single round.
+    *   **SD Card Random Write Performance:** SD cards, due to their internal flash memory architecture (erase blocks, page writes, read-modify-write cycles), can be exceptionally slow at random write tests (especially 4KiB with high queue depth like Q32), even if they have good sequential speed ratings (e.g., U3, A1/A2). This is normal. If random write tests are taking an excessively long time, consider reducing the test file size (e.g., `-s 128m` or `-s 256m`) or the number of rounds (`-r 1`) for these specific tests to get a quicker indication of performance.
 *   **SD Card Wear:** Running intensive write benchmarks frequently can contribute to the wear of SD cards. Use judiciously.
 *   **System Load:** For best results, ensure the system is relatively idle during the benchmark. Other I/O-intensive processes can skew results.
 *   **Tool Versions:** The script is designed to work with common versions of GNU utilities. BusyBox versions (common on embedded systems) can sometimes have slightly different option support (e.g., `df -B` vs `df -k`). The script attempts to use compatible options.
