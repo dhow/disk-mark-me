@@ -2,6 +2,32 @@
 
 `disk-mark-me` is a shell script that presents disk benchmark results in a format similar to CrystalDiskMark's default profile, by leveraging `fio` (Flexible I/O Tester). It is designed for Linux-based systems, including embedded devices like handheld gaming consoles running JELOS or ROCKNIX.
 
+## Example Output (Non-Verbose, v1.1.8 - defaults used)
+
+```
+------------------------------------------------------------------------------
+disk-mark-me v1.1.8 - fio v3.37 
+------------------------------------------------------------------------------
+* MB/s = 1,000,000 bytes/s
+* Target: . | Test File Size: 1g (IEC) | Rounds: 5
+
+[Read]
+  SEQ   1MiB (Q= 8, T=1) : 19503.513 MB/s [  18600.0 IOPS]
+  SEQ   1MiB (Q= 1, T=1) :  5681.000 MB/s [   5417.0 IOPS]
+  RND   4KiB (Q=32, T=1) :   963.000 MB/s [ 235000.0 IOPS]
+  RND   4KiB (Q= 1, T=1) :    89.600 MB/s [  21900.0 IOPS]
+
+[Write]
+  SEQ   1MiB (Q= 8, T=1) :  3016.000 MB/s [   2876.0 IOPS]
+  SEQ   1MiB (Q= 1, T=1) :  2926.000 MB/s [   2790.0 IOPS]
+  RND   4KiB (Q=32, T=1) :   987.000 MB/s [ 241000.0 IOPS]
+  RND   4KiB (Q= 1, T=1) :    81.200 MB/s [  19800.0 IOPS]
+
+Benchmark complete.
+```
+
+
+
 ## Features
 
 *   Tests sequential and random read/write performance.
@@ -186,30 +212,6 @@ If you have `make` installed on your system and have downloaded both `disk-mark-
     ```bash
     ./disk-mark-me -t /media/my_usb -s 512m -r 3 -b read -v
     ```
-
-## Example Output (Non-Verbose, v1.1.8 - defaults used)
-
-```
-------------------------------------------------------------------------------
-disk-mark-me v1.1.8 - fio v3.37 
-------------------------------------------------------------------------------
-* MB/s = 1,000,000 bytes/s
-* Target: . | Test File Size: 1g (IEC) | Rounds: 5
-
-[Read]
-  SEQ   1MiB (Q= 8, T=1) : 19503.513 MB/s [  18600.0 IOPS]
-  SEQ   1MiB (Q= 1, T=1) :  5681.000 MB/s [   5417.0 IOPS]
-  RND   4KiB (Q=32, T=1) :   963.000 MB/s [ 235000.0 IOPS]
-  RND   4KiB (Q= 1, T=1) :    89.600 MB/s [  21900.0 IOPS]
-
-[Write]
-  SEQ   1MiB (Q= 8, T=1) :  3016.000 MB/s [   2876.0 IOPS]
-  SEQ   1MiB (Q= 1, T=1) :  2926.000 MB/s [   2790.0 IOPS]
-  RND   4KiB (Q=32, T=1) :   987.000 MB/s [ 241000.0 IOPS]
-  RND   4KiB (Q= 1, T=1) :    81.200 MB/s [  19800.0 IOPS]
-
-Benchmark complete.
-```
 
 ## Important Notes
 
